@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from crawler import request_html, fetch_github_links, fetch_extra_github_information
+from crawler import (request_html, fetch_github_links, fetch_extra_github_information,
+                     extract_link_from_resource, process_wikis_body)
 
 
 GITHUB_REPOSITORY_INFORMATION = b"""<ul class="list-style-none">
@@ -35,6 +36,9 @@ GITHUB_REPOSITORY_INFORMATION = b"""<ul class="list-style-none">
 </ul>"""
 
 GITHUB_REPOSITORY_LIST = b"""<body>{"payload": {"results": [{"id": "55005225", "archived": false, "color": "#563d7c", "followers": 0, "has_funding_file": false, "hl_name": "atuldjadhav/DropBox-Cloud-Storage", "hl_trunc_description": "Technologies:- Openstack NOVA, NEUTRON, SWIFT, CINDER API's, JAVA, JAX-RS, MAVEN, JSON, HTML5, CSS, JAVASCRIPT, ANGULARJS", "language": "CSS", "mirror": false, "owned_by_organization": false, "public": true, "repo": {"repository": {"id": 55005225, "name": "DropBox-Cloud-Storage", "owner_id": 17938694, "owner_login": "atuldjadhav", "updated_at": "2016-03-29T19:40:33.966Z", "has_issues": true}}, "sponsorable": false, "topics": [], "type": "Public", "help_wanted_issues_count": 0, "good_first_issue_issues_count": 0, "starred_by_current_user": false}]}}</body>"""
+
+WIKIS_RESPONSE = """{"payload":{"header_redesign_enabled":false,"results":[{"body":"football data api をローカルでテスト実行したいとき import http.client\nimport json def fetch_api_data():\ntry:\nconnection = http.client.HTTPConnection('api.football-data.org')\nheaders = { 'X-Auth-Token': 'API キー' }\nconnection.request('GET', '/v4/competitions/PL/teams', None, headers)\nresponse = json.loads(connection.getresponse().read().decode())\nreturn response\nexcept Exception as e:\nprint(f\"Error occurred while fetching data from API: {e}\")\nreturn None data = fetch_api_data()\nif data is not None:\nprint(json.dumps(data, indent=4))","filename":"Python(Django).md","format":"markdown","hl_body":"football data api をローカルでテスト実行したいとき import http.client\nimport json def fetch_api_data():\ntry:\nconnection = http.client.HTTPConnection('api.football-data.org')\nheaders = { 'X-Auth-Token': ...","hl_title":"Python(Django)","id":"19a3d5048458b7a2a41158a807746b8d7ca9bfe2","path":"Python(Django).md","public":true,"repo":{"repository":{"id":672209564,"name":"PostMatch","owner_id":132193935,"owner_login":"Kota-Oshiro","updated_at":"2023-10-10T09:28:59.270Z","has_issues":true}},"repo_id":672209564,"title":"Python(Django)","updated_at":"2023-07-30T17:30:30.000+09:00"}"""
+WIKIS_PROCESSED_RESPONSE = """{"payload":{"header_redesign_enabled":false,"results":[{"filename":"Python(Django).md","format":"markdown","hl_title":"Python(Django)","id":"19a3d5048458b7a2a41158a807746b8d7ca9bfe2","path":"Python(Django).md","public":true,"repo":{"repository":{"id":672209564,"name":"PostMatch","owner_id":132193935,"owner_login":"Kota-Oshiro","updated_at":"2023-10-10T09:28:59.270Z","has_issues":true}},"repo_id":672209564,"title":"Python(Django)","updated_at":"2023-07-30T17:30:30.000+09:00"}"""
 
 
 class AsyncSession:
@@ -174,6 +178,52 @@ class TestGitHubScraper(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
+        self.assertEqual(result, expected_result)
+
+    @patch("crawler.GITHUB_LINK", 'https://github.com')
+    async def test_extract_link_from_resource(self):
+        data = {
+            'repo': {
+                'repository': {
+                    'name': 'myrepo',
+                    'owner_login': 'myuser'
+                }
+            },
+            'number': 42,
+            'hl_title': 'MyTitle'
+        }
+
+        result = await extract_link_from_resource('Issues', data)
+
+        expected_result = 'https://github.com/myuser/myrepo/issues/42'
+        self.assertEqual(result, expected_result)
+
+    @patch("crawler.GITHUB_LINK", 'https://github.com')
+    async def test_extract_link_from_resource_no_number(self):
+        data = {
+            'repo': {
+                'repository': {
+                    'name': 'myrepo',
+                    'owner_login': 'myuser'
+                }
+            },
+            'hl_title': 'MyTitle'
+        }
+
+        result = await extract_link_from_resource('Wikis', data)
+
+        expected_result = 'https://github.com/myuser/myrepo/wikis/MyTitle'
+        self.assertEqual(result, expected_result)
+
+    async def test_process_wikis_body_no_matches(self):
+        input_body = "This is a test body with no matches."
+        result = await process_wikis_body(input_body)
+        self.assertEqual(result, input_body)
+
+    async def test_process_wikis_body_single_match(self):
+        input_body = WIKIS_RESPONSE
+        expected_result = WIKIS_PROCESSED_RESPONSE
+        result = await process_wikis_body(input_body)
         self.assertEqual(result, expected_result)
 
 

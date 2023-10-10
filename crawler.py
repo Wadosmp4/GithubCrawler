@@ -2,6 +2,10 @@ import aiohttp
 import asyncio
 import json
 import random
+
+from typing import List, Optional, Dict, Union
+
+from aiohttp import ClientSession
 from bs4 import BeautifulSoup
 
 GITHUB_LINK = "https://github.com"
@@ -16,21 +20,59 @@ GITHUB_PAGE_URL_PATH = "hl_name"
 ENCODING = "utf-8"
 HTML_PARSER = "html5lib"
 
+WIKIS = "Wikis"
+REPOSITORIES = "Repositories"
 
-async def request_html(session, path, proxies):
+# keys to remove from wikis response body
+WIKIS_BODY = '{"body":'
+WIKIS_FILENAME = '"filename":'
+WIKIS_HL_BODY = '"hl_body":'
+WIKIS_HL_TITLE = '"hl_title":'
+
+
+async def process_wikis_body(body: str) -> str:
+    """We need to process additionally response with Wikis
+       because it has code samples that cannot be cast to json"""
+    body_index = 0
+    while (new_index := body.find(WIKIS_BODY, body_index)) != -1:
+        # removing part with programming code in body
+        filename_index = body.find(WIKIS_FILENAME, body_index)
+        body = body[:new_index] + "{" + body[filename_index:]
+
+        # removing part with programming code in hl_body
+        hl_body_index = body.find(WIKIS_HL_BODY, body_index)
+        hl_title_index = body.find(WIKIS_HL_TITLE, hl_body_index)
+        body = body[:hl_body_index] + body[hl_title_index:]
+
+        body_index = new_index + 2
+
+    return body
+
+
+async def extract_link_from_resource(data_type: str, obj: Dict[str, Union[str, List, Dict]]):
+    repository = obj.get('repo').get('repository')
+    repo_name = repository.get('name')
+    repo_owner = repository.get('owner_login')
+    repo_number = obj.get('number') or obj.get('hl_title')
+
+    return f'{GITHUB_LINK}/{repo_owner}/{repo_name}/{data_type.lower()}/{repo_number}'
+
+
+async def request_html(session: ClientSession, path: str, proxies: List[str]) -> Optional[bytes]:
     proxy = PROXY.format(random.choice(proxies))
-    async with session.get(f"/{path}", proxy=proxy) as response:
+    async with session.get(f"/{path}") as response:
         if response.status == 200:
             return await response.read()
         print(f"Failed to retrieve data. Status code: {response.status}")
         return None
 
 
-async def fetch_github_links(input_info):
+async def fetch_github_links(input_info: Dict[str, Union[str, List[str]]]) -> List[Dict[str, str]]:
     proxies = input_info["proxies"]
 
+    data_type = input_info["type"]
     search_url = SEARCH_PATH.format(keywords='+'.join(input_info["keywords"]),
-                                    resource_type=input_info["type"])
+                                    resource_type=data_type)
 
     timeout = aiohttp.ClientTimeout(total=30)
     try:
@@ -38,16 +80,24 @@ async def fetch_github_links(input_info):
             html = await request_html(session, search_url, proxies)
             soup = BeautifulSoup(html.decode(ENCODING), HTML_PARSER)
             body = soup.find(BODY).text
+            if data_type == WIKIS:
+                body = await process_wikis_body(body)
+
             json_object = json.loads(body)
 
-            tasks = []
-            for obj in json_object.get('payload', {'results': []})['results']:
-                task = asyncio.create_task(
-                    fetch_extra_github_information(session, obj.get(GITHUB_PAGE_URL_PATH), proxies)
-                )
-                tasks.append(task)
-
-            result = await asyncio.gather(*tasks)
+            result = []
+            objects = json_object.get('payload', {}).get('results', [])
+            if data_type == REPOSITORIES:
+                tasks = []
+                for obj in objects:
+                    task = asyncio.create_task(
+                        fetch_extra_github_information(session, obj.get(GITHUB_PAGE_URL_PATH), proxies)
+                    )
+                    tasks.append(task)
+                result.extend(await asyncio.gather(*tasks))
+            else:
+                for obj in objects:
+                    result.append({'url': await extract_link_from_resource(data_type, obj)})
             return result
 
     except Exception as e:
@@ -55,7 +105,7 @@ async def fetch_github_links(input_info):
         return []
 
 
-async def fetch_extra_github_information(session, path, proxies):
+async def fetch_extra_github_information(session: ClientSession, path: str, proxies: List[str]) -> Dict[str, str]:
     html = await request_html(session, path, proxies)
 
     soup = BeautifulSoup(html.decode(ENCODING), HTML_PARSER)
